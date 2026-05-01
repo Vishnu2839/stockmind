@@ -95,11 +95,11 @@ async def search_tickers(q: str = Query(..., min_length=1)):
 
 @app.get("/watchlist")
 async def get_watchlist(tickers: str = Query("AAPL,TSLA,NVDA,MSFT,GOOGL")):
-    """Get current prices for multiple tickers."""
-    from data_collector import get_stock_info
+    """Get current prices for multiple tickers — sequential to respect AV rate limits."""
+    from data_collector import get_stock_info, _cache_get
     ticker_list = [t.strip().upper() for t in tickers.split(",") if t.strip()]
     results = []
-    for t in ticker_list[:10]:
+    for i, t in enumerate(ticker_list[:10]):
         try:
             info = get_stock_info(t)
             info["company_name"] = KNOWN_TICKERS.get(t, info.get("company_name", t))
@@ -107,6 +107,10 @@ async def get_watchlist(tickers: str = Query("AAPL,TSLA,NVDA,MSFT,GOOGL")):
         except Exception as e:
             results.append({"ticker": t, "company_name": KNOWN_TICKERS.get(t, t),
                            "current_price": 0, "price_change": 0, "price_change_pct": 0, "error": str(e)})
+        # Respect Alpha Vantage free rate limit (5 req/min).
+        # Only delay if this ticker was NOT already cached.
+        if i < len(ticker_list) - 1 and not _cache_get(f"quote_{t}"):
+            await asyncio.sleep(13)
     return {"watchlist": results}
 
 

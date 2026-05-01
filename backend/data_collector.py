@@ -16,6 +16,21 @@ from ta.volume import OnBalanceVolumeIndicator, MFIIndicator
 
 ALPHA_VANTAGE_KEY = os.environ.get("ALPHA_VANTAGE_KEY", "RL30PECT2JGPAIDH")
 
+# ── Simple in-memory cache (TTL = 5 minutes) ──────────────────────────────────
+import time
+_PRICE_CACHE: dict = {}  # {ticker: {data: ..., ts: float}}
+_CACHE_TTL = 300  # 5 minutes
+
+
+def _cache_get(ticker: str):
+    entry = _PRICE_CACHE.get(ticker)
+    if entry and (time.time() - entry["ts"]) < _CACHE_TTL:
+        return entry["data"]
+    return None
+
+
+def _cache_set(ticker: str, data: dict):
+    _PRICE_CACHE[ticker] = {"data": data, "ts": time.time()}
 COMPANY_NAMES = {
     "AAPL": "Apple Inc.", "TSLA": "Tesla Inc.", "NVDA": "NVIDIA Corporation",
     "MSFT": "Microsoft Corporation", "GOOGL": "Alphabet Inc.", "AMZN": "Amazon.com Inc.",
@@ -29,7 +44,10 @@ COMPANY_NAMES = {
 
 
 def _get_av_quote(ticker: str) -> dict:
-    """Fetch real-time quote from Alpha Vantage."""
+    """Fetch real-time quote from Alpha Vantage (with cache)."""
+    cached = _cache_get(f"quote_{ticker}")
+    if cached:
+        return cached
     try:
         url = (
             f"https://www.alphavantage.co/query"
@@ -44,13 +62,15 @@ def _get_av_quote(ticker: str) -> dict:
         change_pct = float(data["10. change percent"].replace("%", ""))
         high_52 = float(data.get("03. high", 0))
         low_52 = float(data.get("04. low", 0))
-        return {
+        result = {
             "current_price": round(price, 2),
             "price_change": round(change, 2),
             "price_change_pct": round(change_pct, 2),
             "fifty_two_week_high": high_52,
             "fifty_two_week_low": low_52,
         }
+        _cache_set(f"quote_{ticker}", result)
+        return result
     except Exception as e:
         print(f"Alpha Vantage quote error for {ticker}: {e}")
         return {}
