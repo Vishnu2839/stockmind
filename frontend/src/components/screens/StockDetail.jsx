@@ -104,6 +104,10 @@ export default function StockDetail() {
               />
               <button 
                 onClick={() => {
+                  if (!data.current_price || data.current_price <= 0) {
+                    alert("Cannot buy: Market price unavailable.");
+                    return;
+                  }
                   const success = buyStock(ticker, parseInt(tradeShares), data.current_price);
                   if (success) alert(`Bought ${tradeShares} shares`);
                   else alert("Insufficient balance");
@@ -134,6 +138,10 @@ export default function StockDetail() {
               />
               <button 
                 onClick={() => {
+                  if (!data.current_price || data.current_price <= 0) {
+                    alert("Cannot sell: Market price unavailable.");
+                    return;
+                  }
                   const success = sellStock(ticker, parseInt(tradeShares), data.current_price);
                   if (success) alert(`Sold ${tradeShares} shares`);
                   else alert("Not enough shares");

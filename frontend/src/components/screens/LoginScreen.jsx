@@ -8,9 +8,10 @@ export default function LoginScreen() {
   const { login } = useAuth();
   const navigate = useNavigate();
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    if (login(email, password)) {
+    const success = await login(email, password);
+    if (success) {
       navigate('/');
     } else {
       alert('Invalid email or password');

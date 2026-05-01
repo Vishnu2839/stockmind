@@ -17,6 +17,29 @@ load_dotenv()
 
 app = FastAPI(title="StockMind API", version="1.0.0")
 
+# ──────────────────── User & Portfolio Database (Simple Persistence) ────────────────────
+DB_PATH = "/tmp/stockmind_db.json"
+
+def load_db():
+    if os.path.exists(DB_PATH):
+        try:
+            with open(DB_PATH, "r") as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"Error loading DB: {e}")
+            return {"users": {}}
+    return {"users": {}}
+
+def save_db(db):
+    try:
+        with open(DB_PATH, "w") as f:
+            json.dump(db, f)
+    except Exception as e:
+        print(f"Error saving DB: {e}")
+
+# Load DB on startup
+_db = load_db()
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -88,7 +111,75 @@ async def search_tickers(q: str = Query(..., min_length=1)):
     for ticker, name in KNOWN_TICKERS.items():
         if q_upper in ticker or q_lower in name.lower():
             results.append({"ticker": ticker, "name": name})
-    return {"results": results[:10]}
+    return results
+
+
+# ──────────────────── Auth Endpoints ────────────────────
+
+from pydantic import BaseModel
+class UserAuth(BaseModel):
+    email: str
+    password: str
+    name: str = ""
+
+@app.post("/register")
+async def register(user: UserAuth):
+    global _db
+    if user.email in _db["users"]:
+        return JSONResponse(status_code=400, content={"error": "User already exists"})
+    
+    _db["users"][user.email] = {
+        "name": user.name,
+        "password": user.password,
+        "portfolio": {
+            "balance": 1000000.0,
+            "holdings": []
+        }
+    }
+    save_db(_db)
+    return {"message": "Success", "user": {"email": user.email, "name": user.name}}
+
+@app.post("/login")
+async def login(user: UserAuth):
+    global _db
+    stored = _db["users"].get(user.email)
+    if not stored or stored["password"] != user.password:
+        return JSONResponse(status_code=401, content={"error": "Invalid credentials"})
+    
+    return {
+        "message": "Success", 
+        "user": {"email": user.email, "name": stored["name"]},
+        "portfolio": stored["portfolio"]
+    }
+
+
+# ──────────────────── Portfolio Endpoints ────────────────────
+
+class PortfolioUpdate(BaseModel):
+    email: str
+    balance: float
+    holdings: list
+
+@app.post("/portfolio/update")
+async def update_portfolio(p: PortfolioUpdate):
+    global _db
+    if p.email not in _db["users"]:
+        return JSONResponse(status_code=404, content={"error": "User not found"})
+    
+    _db["users"][p.email]["portfolio"] = {
+        "balance": p.balance,
+        "holdings": p.holdings
+    }
+    save_db(_db)
+    return {"message": "Saved"}
+
+@app.get("/portfolio/get")
+async def get_portfolio(email: str):
+    global _db
+    stored = _db["users"].get(email)
+    if not stored:
+        return JSONResponse(status_code=404, content={"error": "User not found"})
+    return stored["portfolio"]
 
 
 # ──────────────────── Watchlist ────────────────────
@@ -142,10 +233,11 @@ async def analyze_stock(ticker: str = Query(..., min_length=1)):
             results = []
             for coro in coros:
                 try:
-                    results.append(await coro)
+                    res = await coro
+                    results.append(res if res is not None else {})
                 except Exception as e:
                     print(f"Data source error: {e}")
-                    results.append(None)
+                    results.append({})
             return results
 
         stocktwits_data, news_data, trends_data, price_data, events_data, fear_greed_data = await safe_gather(
@@ -157,9 +249,9 @@ async def analyze_stock(ticker: str = Query(..., min_length=1)):
             asyncio.to_thread(get_fear_greed)
         )
 
-        dt_e = events_data.get("days_to_earnings", 90) if events_data else 90
+        dt_e = events_data.get("days_to_earnings", 90)
         dt_e_n = max(0, min(100, (90 - dt_e) / 90 * 100))
-        analyst_str = events_data.get("analyst_consensus", "").upper() if events_data else ""
+        analyst_str = events_data.get("analyst_consensus", "").upper()
         analyst_n = 75 if "BUY" in analyst_str else (25 if "SELL" in analyst_str else 50)
 
         # Emotion score
@@ -205,6 +297,9 @@ async def analyze_stock(ticker: str = Query(..., min_length=1)):
             "regime": regime.get("regime", "VOLATILE"),
             "regime_confidence": regime.get("confidence", 50),
             "predictions": predictions,
+            "current_price": stock_info.get("current_price", 0),
+            "price_change": stock_info.get("price_change", 0),
+            "price_change_pct": stock_info.get("price_change_pct", 0),
             "model_accuracy_with_emotion": full_acc,
             "model_accuracy_without_emotion": base_acc,
             "accuracy_improvement": improvement,

@@ -1,9 +1,9 @@
 import SourceCard from './SourceCard';
 
 const SOURCE_CONFIG = [
-  { key: 'twitter', label: 'StockTwits', icon: '💬', color: '#1d9bf0' },
+  { key: 'stocktwits', label: 'StockTwits', icon: '💬', color: '#1d9bf0' },
   { key: 'news', label: 'News', icon: '📰', color: '#0d9488' },
-  { key: 'reddit', label: 'Alpha Vantage', icon: '🧠', color: '#f97316' },
+  { key: 'fear_greed', label: 'Fear & Greed', icon: '🧠', color: '#f97316' },
   { key: 'trends', label: 'Google Trends', icon: '📈', color: '#10b981' },
   { key: 'technical', label: 'Price / Technical', icon: '📊', color: '#9d5ff5' },
   { key: 'events', label: 'Events / Earnings', icon: '📅', color: '#f59e0b' },
@@ -13,7 +13,7 @@ export default function EvidenceGrid({ data, onSourceClick }) {
   if (!data) return null;
 
   // Check if we only have meta data (no twitter/news/etc)
-  const isDeepLoading = !data.twitter && !data.news;
+  const isDeepLoading = !data.stocktwits && !data.news;
 
     const getSourceData = (key) => {
       if (isDeepLoading) {
@@ -21,35 +21,32 @@ export default function EvidenceGrid({ data, onSourceClick }) {
       }
       const src = data[key] || {};
       
-      // Check if data is actually present or just fallback
-      const hasData = (src.tweet_count > 0) || (src.headline_count > 0) || (src.post_count > 0) || (src.rsi !== undefined);
-
       switch (key) {
-        case 'twitter':
+        case 'stocktwits':
           return { 
             pct: src.sentiment_pct || 50, 
-            label: src.tweet_count > 0 ? src.sentiment_label : 'NO DATA', 
+            label: src.sentiment_label || 'NEUTRAL', 
             desc: src.tweet_count > 0 ? `${src.tweet_count} messages analyzed` : 'Searching social feeds...' 
           };
         case 'news':
           return { 
-            pct: src.avg_sentiment_pct || 50, 
-            label: src.headline_count > 0 ? src.sentiment_label : 'EMPTY', 
+            pct: src.sentiment_pct || 50, 
+            label: src.sentiment_label || 'NEUTRAL', 
             desc: src.headline_count > 0 ? `${src.headline_count} headlines scanned` : 'No recent news found' 
           };
-        case 'reddit':
+        case 'fear_greed':
           return { 
-            pct: src.bullish_pct || 50, 
-            label: src.post_count > 0 ? src.sentiment_label : 'N/A', 
-            desc: src.post_count > 0 ? `${src.post_count} articles analyzed` : 'Scraping Alpha Vantage...' 
+            pct: src.fear_greed_score || 50, 
+            label: src.fear_greed_score > 60 ? 'GREED' : (src.fear_greed_score < 40 ? 'FEAR' : 'NEUTRAL'), 
+            desc: 'CNN Market Fear & Greed Index' 
           };
         case 'trends':
-          return { pct: src.trend_score || 50, label: src.direction || 'stable', desc: src.spike_detected ? 'Spike detected!' : 'Normal volume' };
+          return { pct: src.trend_score || 50, label: src.trend_score > 50 ? 'UP' : 'DOWN', desc: 'Search volume momentum' };
         case 'technical':
           return { 
             pct: src.rsi || 50, 
-            label: src.rsi ? src.overall_technical_verdict : 'N/A', 
-            desc: src.rsi ? `${src.bullish_count || 0} bullish, ${src.bearish_count || 0} bearish` : 'Calculating RSI/MACD...' 
+            label: src.overall_technical_verdict || 'NEUTRAL', 
+            desc: src.rsi ? `RSI: ${src.rsi.toFixed(1)} · ${src.trend || 'Stable'}` : 'Calculating RSI/MACD...' 
           };
         case 'events':
           return { 

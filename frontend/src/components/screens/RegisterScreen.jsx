@@ -9,9 +9,10 @@ export default function RegisterScreen() {
   const { register } = useAuth();
   const navigate = useNavigate();
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    if (register(name, email, password)) {
+    const success = await register(name, email, password);
+    if (success) {
       navigate('/');
     } else {
       alert('Email already registered');

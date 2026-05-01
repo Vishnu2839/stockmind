@@ -32,17 +32,21 @@ export default function PriceChart({ ticker, predictions, currentPrice }) {
   const chartW = W - PAD * 2, chartH = H - PAD * 2;
 
   const chart = useMemo(() => {
-    if (histData.length < 2) return null;
-    const closes = histData.map(d => d.close);
-    const allVals = [...closes, predTarget, predLow, predHigh];
+    const closes = (histData || []).map(d => d.close).filter(v => typeof v === 'number' && !isNaN(v));
+    if (closes.length < 2) return null;
+
+    const allVals = [...closes, predTarget, predLow, predHigh].filter(v => typeof v === 'number' && !isNaN(v));
     const minY = Math.min(...allVals) * 0.98;
     const maxY = Math.max(...allVals) * 1.02;
-    const rangeY = maxY - minY || 1;
+    const rangeY = (maxY - minY) || 1;
 
     // Total points: historical + 1 prediction point
     const totalPts = closes.length + 1;
     const scaleX = (i) => PAD + (i / (totalPts - 1)) * chartW;
-    const scaleY = (v) => PAD + chartH - ((v - minY) / rangeY) * chartH;
+    const scaleY = (v) => {
+      const scaled = PAD + chartH - ((v - minY) / rangeY) * chartH;
+      return isNaN(scaled) ? PAD + chartH : scaled;
+    };
 
     // Historical line
     const histLine = closes.map((v, i) => `${scaleX(i)},${scaleY(v)}`).join(' ');
