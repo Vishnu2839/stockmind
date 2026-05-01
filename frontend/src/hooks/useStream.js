@@ -15,7 +15,7 @@ export function useStream() {
     setIsStreaming(true);
     setIsDone(false);
 
-    const API = 'http://localhost:8001';
+    const API = import.meta.env.VITE_API_URL || 'http://localhost:8001';
     const es = new EventSource(`${API}/think?ticker=${ticker}&timeframe=${timeframe}`);
     sourceRef.current = es;
 

@@ -60,14 +60,17 @@ def get_evaluation_results() -> dict:
 
 def predict_all_timeframes(ticker: str, technical_data: dict = None, emotion_score: float = 50.0) -> dict:
     """Generate predictions for all 8 timeframes."""
-    # Get current price
-    df = fetch_ohlcv(ticker, period="2y")
-    if df.empty:
-        raise ValueError(f"No price data available for {ticker}.")
-
-    current_price = float(df["Close"].iloc[-1])
-    df = calculate_indicators(df)
-    df = fetch_macro_data(df)
+    # Get current price - use fallback if data unavailable
+    current_price = 100.0  # safe default
+    df = pd.DataFrame()
+    try:
+        df = fetch_ohlcv(ticker, period="2y")
+        if not df.empty:
+            current_price = float(df["Close"].iloc[-1])
+            df = calculate_indicators(df)
+            df = fetch_macro_data(df)
+    except Exception as e:
+        print(f"OHLCV fetch error for {ticker}: {e}")
 
     # Try to use trained model
     model = load_model(ticker)

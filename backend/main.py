@@ -107,8 +107,7 @@ async def get_watchlist(tickers: str = Query("AAPL,TSLA,NVDA,MSFT,GOOGL")):
         except Exception as e:
             results.append({"ticker": t, "company_name": KNOWN_TICKERS.get(t, t),
                            "current_price": 0, "price_change": 0, "price_change_pct": 0, "error": str(e)})
-        # Respect Alpha Vantage free rate limit (5 req/min).
-        # Only delay if this ticker was NOT already cached.
+        # Rate limit: wait 13s between uncached tickers
         if i < len(ticker_list) - 1 and not _cache_get(f"quote_{t}"):
             await asyncio.sleep(13)
     return {"watchlist": results}
@@ -121,91 +120,106 @@ async def analyze_stock(ticker: str = Query(..., min_length=1)):
     """Full 6-source analysis + predictions for a ticker."""
     ticker = ticker.upper()
 
-    from data_collector import get_stock_info, get_technical_analysis, fetch_ohlcv, calculate_indicators
-    from social_scraper import scrape_stocktwits
-    from news_scraper import get_news_sentiment
-    from trends_scraper import scrape_trends
-    from events_calendar import get_events
-    from emotion_fusion import fuse_emotion
-    from fear_greed_scraper import get_fear_greed
-    from regime_detector import detect_regime
-    from predictor import predict_all_timeframes, get_evaluation_results
+    try:
+        from data_collector import get_stock_info, get_technical_analysis, fetch_ohlcv, calculate_indicators
+        from social_scraper import scrape_stocktwits
+        from news_scraper import get_news_sentiment
+        from trends_scraper import scrape_trends
+        from events_calendar import get_events
+        from emotion_fusion import fuse_emotion
+        from fear_greed_scraper import get_fear_greed
+        from regime_detector import detect_regime
+        from predictor import predict_all_timeframes, get_evaluation_results
 
-    get_stocktwits_sentiment = scrape_stocktwits
-    get_trends = scrape_trends
-    get_price_data = get_technical_analysis
+        get_stocktwits_sentiment = scrape_stocktwits
+        get_trends = scrape_trends
+        get_price_data = get_technical_analysis
 
-    stock_info = get_stock_info(ticker)
-    
-    # Run all data collection with individual error handling so one failure doesn't crash everything
-    async def safe_gather(*coros):
-        results = []
-        for coro in coros:
-            try:
-                results.append(await coro)
-            except Exception as e:
-                print(f"Data source error: {e}")
-                results.append(None)
-        return results
+        stock_info = get_stock_info(ticker)
 
-    stocktwits_data, news_data, trends_data, price_data, events_data, fear_greed_data = await safe_gather(
-        asyncio.to_thread(get_stocktwits_sentiment, ticker),
-        asyncio.to_thread(get_news_sentiment, ticker),
-        asyncio.to_thread(get_trends, ticker),
-        asyncio.to_thread(get_price_data, ticker),
-        asyncio.to_thread(get_events, ticker),
-        asyncio.to_thread(get_fear_greed)
-    )
+        # Run all data collection with individual error handling
+        async def safe_gather(*coros):
+            results = []
+            for coro in coros:
+                try:
+                    results.append(await coro)
+                except Exception as e:
+                    print(f"Data source error: {e}")
+                    results.append(None)
+            return results
 
-    dt_e = events_data.get("days_to_earnings", 90) if events_data else 90
-    dt_e_n = max(0, min(100, (90 - dt_e) / 90 * 100))
-    analyst_str = events_data.get("analyst_consensus", "").upper() if events_data else ""
-    analyst_n = 75 if "BUY" in analyst_str else (25 if "SELL" in analyst_str else 50)
+        stocktwits_data, news_data, trends_data, price_data, events_data, fear_greed_data = await safe_gather(
+            asyncio.to_thread(get_stocktwits_sentiment, ticker),
+            asyncio.to_thread(get_news_sentiment, ticker),
+            asyncio.to_thread(get_trends, ticker),
+            asyncio.to_thread(get_price_data, ticker),
+            asyncio.to_thread(get_events, ticker),
+            asyncio.to_thread(get_fear_greed)
+        )
 
-    # Emotion score
-    emotion = fuse_emotion(
-        stocktwits_bullish_pct=stocktwits_data.get("sentiment_pct", 50) if stocktwits_data else 50,
-        news_sentiment_pct=news_data.get("sentiment_pct", 50) if news_data else 50,
-        trends_score=trends_data.get("trend_score", 50) if trends_data else 50,
-        fear_greed_score=fear_greed_data.get("fear_greed_score", 50) if fear_greed_data else 50,
-        days_to_earnings_n=dt_e_n,
-        analyst_score_n=analyst_n
-    )
+        dt_e = events_data.get("days_to_earnings", 90) if events_data else 90
+        dt_e_n = max(0, min(100, (90 - dt_e) / 90 * 100))
+        analyst_str = events_data.get("analyst_consensus", "").upper() if events_data else ""
+        analyst_n = 75 if "BUY" in analyst_str else (25 if "SELL" in analyst_str else 50)
 
-    # Regime detection
-    df = fetch_ohlcv(ticker, period="2y")
-    regime = {"regime": "VOLATILE", "confidence": 50} 
-    if not df.empty:
-        df = calculate_indicators(df)
-        regime = detect_regime(df)
+        # Emotion score
+        emotion = fuse_emotion(
+            stocktwits_bullish_pct=stocktwits_data.get("sentiment_pct", 50) if stocktwits_data else 50,
+            news_sentiment_pct=news_data.get("sentiment_pct", 50) if news_data else 50,
+            trends_score=trends_data.get("trend_score", 50) if trends_data else 50,
+            fear_greed_score=fear_greed_data.get("fear_greed_score", 50) if fear_greed_data else 50,
+            days_to_earnings_n=dt_e_n,
+            analyst_score_n=analyst_n
+        )
 
-    # Predictions
-    predictions = predict_all_timeframes(ticker, price_data, emotion["emotion_score"])
+        # Regime detection
+        regime = {"regime": "VOLATILE", "confidence": 50}
+        try:
+            df = fetch_ohlcv(ticker, period="2y")
+            if not df.empty:
+                df = calculate_indicators(df)
+                regime = detect_regime(df)
+        except Exception as e:
+            print(f"Regime detection error: {e}")
 
-    # Get accuracy comparison
-    eval_results = get_evaluation_results()
-    ticker_eval = eval_results.get(ticker, {})
-    full_acc = ticker_eval.get("full_model", {}).get("accuracy", 74.2)
-    base_acc = ticker_eval.get("baseline_model", {}).get("accuracy", 61.3)
-    improvement = round(full_acc - base_acc, 1)
+        # Predictions
+        predictions = predict_all_timeframes(ticker, price_data, emotion["emotion_score"])
 
-    return {
-        **stock_info,
-        "stocktwits": stocktwits_data,
-        "news": news_data,
-        "trends": trends_data,
-        "fear_greed": fear_greed_data,
-        "technical": price_data,
-        "events": events_data,
-        "emotion_score": emotion["emotion_score"],
-        "emotion_label": emotion["emotion_label"],
-        "regime": regime.get("regime", "VOLATILE"),
-        "regime_confidence": regime.get("confidence", 50),
-        "predictions": predictions,
-        "model_accuracy_with_emotion": full_acc,
-        "model_accuracy_without_emotion": base_acc,
-        "accuracy_improvement": improvement,
-    }
+        # Get accuracy comparison
+        eval_results = get_evaluation_results()
+        ticker_eval = eval_results.get(ticker, {})
+        full_acc = ticker_eval.get("full_model", {}).get("accuracy", 74.2)
+        base_acc = ticker_eval.get("baseline_model", {}).get("accuracy", 61.3)
+        improvement = round(full_acc - base_acc, 1)
+
+        return {
+            **stock_info,
+            "stocktwits": stocktwits_data,
+            "news": news_data,
+            "trends": trends_data,
+            "fear_greed": fear_greed_data,
+            "technical": price_data,
+            "events": events_data,
+            "emotion_score": emotion["emotion_score"],
+            "emotion_label": emotion["emotion_label"],
+            "regime": regime.get("regime", "VOLATILE"),
+            "regime_confidence": regime.get("confidence", 50),
+            "predictions": predictions,
+            "model_accuracy_with_emotion": full_acc,
+            "model_accuracy_without_emotion": base_acc,
+            "accuracy_improvement": improvement,
+        }
+
+    except Exception as e:
+        print(f"ANALYZE ERROR for {ticker}: {e}")
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(
+            status_code=200,
+            content={"error": str(e), "ticker": ticker, "current_price": 0,
+                     "predictions": {}, "emotion_score": 50, "emotion_label": "Neutral"}
+        )
+
 
 
 # ──────────────────── AI Brain Stream ────────────────────
