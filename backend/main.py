@@ -133,8 +133,18 @@ async def analyze_stock(ticker: str = Query(..., min_length=1)):
 
     stock_info = get_stock_info(ticker)
     
-    # Run all data collection utilizing threaded executor wrapper
-    stocktwits_data, news_data, trends_data, price_data, events_data, fear_greed_data = await asyncio.gather(
+    # Run all data collection with individual error handling so one failure doesn't crash everything
+    async def safe_gather(*coros):
+        results = []
+        for coro in coros:
+            try:
+                results.append(await coro)
+            except Exception as e:
+                print(f"Data source error: {e}")
+                results.append(None)
+        return results
+
+    stocktwits_data, news_data, trends_data, price_data, events_data, fear_greed_data = await safe_gather(
         asyncio.to_thread(get_stocktwits_sentiment, ticker),
         asyncio.to_thread(get_news_sentiment, ticker),
         asyncio.to_thread(get_trends, ticker),
@@ -218,8 +228,18 @@ async def think_stream(
     get_trends = scrape_trends
     get_price_data = get_technical_analysis
 
+    async def safe_gather2(*coros):
+        results = []
+        for coro in coros:
+            try:
+                results.append(await coro)
+            except Exception as e:
+                print(f"Data source error: {e}")
+                results.append(None)
+        return results
+
     stock_info = get_stock_info(ticker)
-    stocktwits_data, news_data, trends_data, price_data, events_data, fear_greed_data = await asyncio.gather(
+    stocktwits_data, news_data, trends_data, price_data, events_data, fear_greed_data = await safe_gather2(
         asyncio.to_thread(get_stocktwits_sentiment, ticker),
         asyncio.to_thread(get_news_sentiment, ticker),
         asyncio.to_thread(get_trends, ticker),

@@ -1,6 +1,9 @@
 """
-data_collector.py — Fetches OHLCV data via yfinance and calculates all technical indicators using the `ta` library.
+data_collector.py — Fetches OHLCV data via Alpha Vantage (primary) and yfinance (fallback),
+and calculates all technical indicators using the `ta` library.
 """
+import os
+import requests
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -11,9 +14,94 @@ from ta.trend import MACD, EMAIndicator, SMAIndicator, CCIIndicator
 from ta.volatility import BollingerBands, AverageTrueRange
 from ta.volume import OnBalanceVolumeIndicator, MFIIndicator
 
+ALPHA_VANTAGE_KEY = os.environ.get("ALPHA_VANTAGE_KEY", "RL30PECT2JGPAIDH")
+
+COMPANY_NAMES = {
+    "AAPL": "Apple Inc.", "TSLA": "Tesla Inc.", "NVDA": "NVIDIA Corporation",
+    "MSFT": "Microsoft Corporation", "GOOGL": "Alphabet Inc.", "AMZN": "Amazon.com Inc.",
+    "META": "Meta Platforms Inc.", "NFLX": "Netflix Inc.", "AMD": "Advanced Micro Devices",
+    "INTC": "Intel Corporation", "DIS": "Walt Disney Company", "BA": "Boeing Company",
+    "JPM": "JPMorgan Chase & Co.", "V": "Visa Inc.", "WMT": "Walmart Inc.",
+    "PG": "Procter & Gamble Co.", "JNJ": "Johnson & Johnson",
+    "RELIANCE.NS": "Reliance Industries", "TCS.NS": "Tata Consultancy Services",
+    "INFY": "Infosys Limited",
+}
+
+
+def _get_av_quote(ticker: str) -> dict:
+    """Fetch real-time quote from Alpha Vantage."""
+    try:
+        url = (
+            f"https://www.alphavantage.co/query"
+            f"?function=GLOBAL_QUOTE&symbol={ticker}&apikey={ALPHA_VANTAGE_KEY}"
+        )
+        resp = requests.get(url, timeout=10)
+        data = resp.json().get("Global Quote", {})
+        if not data or "05. price" not in data:
+            return {}
+        price = float(data["05. price"])
+        change = float(data["09. change"])
+        change_pct = float(data["10. change percent"].replace("%", ""))
+        high_52 = float(data.get("03. high", 0))
+        low_52 = float(data.get("04. low", 0))
+        return {
+            "current_price": round(price, 2),
+            "price_change": round(change, 2),
+            "price_change_pct": round(change_pct, 2),
+            "fifty_two_week_high": high_52,
+            "fifty_two_week_low": low_52,
+        }
+    except Exception as e:
+        print(f"Alpha Vantage quote error for {ticker}: {e}")
+        return {}
+
+
+def _get_av_daily(ticker: str, outputsize: str = "full") -> pd.DataFrame:
+    """Fetch daily OHLCV from Alpha Vantage and return as DataFrame."""
+    try:
+        url = (
+            f"https://www.alphavantage.co/query"
+            f"?function=TIME_SERIES_DAILY&symbol={ticker}"
+            f"&outputsize={outputsize}&apikey={ALPHA_VANTAGE_KEY}"
+        )
+        resp = requests.get(url, timeout=15)
+        ts = resp.json().get("Time Series (Daily)", {})
+        if not ts:
+            return pd.DataFrame()
+        rows = []
+        for date_str, vals in ts.items():
+            rows.append({
+                "Date": pd.to_datetime(date_str),
+                "Open": float(vals["1. open"]),
+                "High": float(vals["2. high"]),
+                "Low": float(vals["3. low"]),
+                "Close": float(vals["4. close"]),
+                "Volume": int(vals["5. volume"]),
+            })
+        df = pd.DataFrame(rows).set_index("Date").sort_index()
+        return df
+    except Exception as e:
+        print(f"Alpha Vantage daily error for {ticker}: {e}")
+        return pd.DataFrame()
+
 
 def fetch_ohlcv(ticker: str, period: str = "2y", interval: str = "1d") -> pd.DataFrame:
-    """Fetch OHLCV data from yfinance."""
+    """Fetch OHLCV data — Alpha Vantage primary, yfinance fallback."""
+    # Try Alpha Vantage first
+    try:
+        df = _get_av_daily(ticker, outputsize="full")
+        if not df.empty:
+            # Filter by period
+            days_map = {"1y": 365, "2y": 730, "5y": 1825, "1mo": 30, "3mo": 90, "6mo": 180}
+            cutoff_days = days_map.get(period, 730)
+            cutoff = pd.Timestamp.now() - pd.Timedelta(days=cutoff_days)
+            df = df[df.index >= cutoff]
+            if not df.empty:
+                return df
+    except Exception as e:
+        print(f"AV fetch_ohlcv error for {ticker}: {e}")
+
+    # Fallback to yfinance
     try:
         stock = yf.Ticker(ticker)
         df = stock.history(period=period, interval=interval)
@@ -395,7 +483,28 @@ def get_historical_data(ticker: str, days: int = 365) -> list:
 
 
 def get_stock_info(ticker: str) -> dict:
-    """Get basic stock info: name, price, change, market cap."""
+    """Get basic stock info — Alpha Vantage primary, yfinance fallback."""
+    company_name = COMPANY_NAMES.get(ticker.upper(), ticker.upper())
+
+    # Try Alpha Vantage first
+    av_quote = _get_av_quote(ticker)
+    if av_quote and av_quote.get("current_price", 0) > 0:
+        return {
+            "ticker": ticker.upper(),
+            "company_name": company_name,
+            "current_price": av_quote["current_price"],
+            "price_change": av_quote["price_change"],
+            "price_change_pct": av_quote["price_change_pct"],
+            "market_cap": 0,
+            "pe_ratio": None,
+            "exchange": "",
+            "sector": "",
+            "industry": "",
+            "fifty_two_week_high": av_quote.get("fifty_two_week_high"),
+            "fifty_two_week_low": av_quote.get("fifty_two_week_low"),
+        }
+
+    # Fallback to yfinance
     try:
         stock = yf.Ticker(ticker)
         info = stock.info
@@ -410,7 +519,7 @@ def get_stock_info(ticker: str) -> dict:
 
         return {
             "ticker": ticker.upper(),
-            "company_name": info.get("shortName", info.get("longName", ticker.upper())),
+            "company_name": info.get("shortName", info.get("longName", company_name)),
             "current_price": round(current, 2),
             "price_change": round(change, 2),
             "price_change_pct": round(change_pct, 2),
