@@ -25,6 +25,8 @@ jobs:
           git init
           git config user.email "bot@stockmind.ai"
           git config user.name "StockMind Bot"
+          git lfs install
+          git lfs track "*.h5"
           git add .
           git commit -m "Auto-sync from GitHub"
           git branch -M main
