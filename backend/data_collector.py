@@ -16,10 +16,36 @@ from ta.volume import OnBalanceVolumeIndicator, MFIIndicator
 
 ALPHA_VANTAGE_KEY = os.environ.get("ALPHA_VANTAGE_KEY", "RL30PECT2JGPAIDH")
 
-# ── Simple in-memory cache (TTL = 5 minutes) ──────────────────────────────────
+# ── Disk-based cache (survives container restarts) + in-memory cache ─────────
 import time
+import json
 _PRICE_CACHE: dict = {}  # {ticker: {data: ..., ts: float}}
-_CACHE_TTL = 300  # 5 minutes
+_CACHE_TTL = 300  # 5 minutes in-memory
+_DISK_CACHE_FILE = "/tmp/stockmind_price_cache.json"
+_DISK_CACHE_TTL = 3600  # 1 hour disk cache
+
+
+def _load_disk_cache():
+    global _PRICE_CACHE
+    try:
+        if os.path.exists(_DISK_CACHE_FILE):
+            with open(_DISK_CACHE_FILE, "r") as f:
+                disk = json.load(f)
+            now = time.time()
+            # Load non-expired entries into memory
+            for k, v in disk.items():
+                if now - v.get("ts", 0) < _DISK_CACHE_TTL:
+                    _PRICE_CACHE[k] = v
+    except Exception:
+        pass
+
+
+def _save_disk_cache():
+    try:
+        with open(_DISK_CACHE_FILE, "w") as f:
+            json.dump(_PRICE_CACHE, f)
+    except Exception:
+        pass
 
 
 def _cache_get(ticker: str):
@@ -31,6 +57,11 @@ def _cache_get(ticker: str):
 
 def _cache_set(ticker: str, data: dict):
     _PRICE_CACHE[ticker] = {"data": data, "ts": time.time()}
+    _save_disk_cache()
+
+
+# Load existing cache on import
+_load_disk_cache()
 COMPANY_NAMES = {
     "AAPL": "Apple Inc.", "TSLA": "Tesla Inc.", "NVDA": "NVIDIA Corporation",
     "MSFT": "Microsoft Corporation", "GOOGL": "Alphabet Inc.", "AMZN": "Amazon.com Inc.",
@@ -105,13 +136,26 @@ def _get_av_daily(ticker: str, outputsize: str = "full") -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def _get_yf_session():
+    """Create a yfinance-compatible requests session with browser-like headers."""
+    session = requests.Session()
+    session.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+    })
+    return session
+
+
 def fetch_ohlcv(ticker: str, period: str = "2y", interval: str = "1d") -> pd.DataFrame:
-    """Fetch OHLCV data — Alpha Vantage primary, yfinance fallback."""
+    """Fetch OHLCV data — Alpha Vantage primary, yfinance with headers fallback."""
     # Try Alpha Vantage first
     try:
         df = _get_av_daily(ticker, outputsize="full")
         if not df.empty:
-            # Filter by period
             days_map = {"1y": 365, "2y": 730, "5y": 1825, "1mo": 30, "3mo": 90, "6mo": 180}
             cutoff_days = days_map.get(period, 730)
             cutoff = pd.Timestamp.now() - pd.Timedelta(days=cutoff_days)
@@ -121,19 +165,24 @@ def fetch_ohlcv(ticker: str, period: str = "2y", interval: str = "1d") -> pd.Dat
     except Exception as e:
         print(f"AV fetch_ohlcv error for {ticker}: {e}")
 
-    # Fallback to yfinance
+    # Fallback: yfinance with browser-like session headers
     try:
-        stock = yf.Ticker(ticker)
+        session = _get_yf_session()
+        stock = yf.Ticker(ticker, session=session)
         df = stock.history(period=period, interval=interval)
         if df.empty:
-            raise ValueError(f"No data found for {ticker}")
-        df.index = pd.to_datetime(df.index)
-        if df.index.tz is not None:
-            df.index = df.index.tz_localize(None)
-        return df
+            # Try without custom session as last resort
+            stock2 = yf.Ticker(ticker)
+            df = stock2.history(period=period, interval=interval)
+        if not df.empty:
+            df.index = pd.to_datetime(df.index)
+            if df.index.tz is not None:
+                df.index = df.index.tz_localize(None)
+            return df
     except Exception as e:
-        print(f"Error fetching {ticker}: {e}")
-        return pd.DataFrame()
+        print(f"yfinance fetch error for {ticker}: {e}")
+
+    return pd.DataFrame()
 
 
 def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
