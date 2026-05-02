@@ -89,6 +89,8 @@ def _get_av_quote(ticker: str) -> dict:
         if not data or "05. price" not in data:
             return {}
         price = float(data["05. price"])
+        if price <= 0:
+            return {}
         change = float(data["09. change"])
         change_pct = float(data["10. change percent"].replace("%", ""))
         high_52 = float(data.get("03. high", 0))
